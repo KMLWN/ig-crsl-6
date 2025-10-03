@@ -1,0 +1,1772 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>INSTA EASY</title>
+  <meta name="theme-color" content="#272C3E" />
+  <link rel="manifest" href="./manifest.webmanifest?v=6">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png?v=1">
+  <link rel="icon" type="image/png" sizes="32x32" href="./icon-32.png?v=1">
+  <link rel="icon" type="image/png" sizes="16x16" href="./icon-16.png?v=1">
+
+  <!--
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js?v=1'));
+    }
+  </script>
+  -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    .safe-area { padding: env(safe-area-inset-top) env(safe-area-inset-right)
+                 env(safe-area-inset-bottom) env(safe-area-inset-left) }
+    input[type="file"].hidden-input { display: none }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+  const { useState, useRef, useEffect } = React;
+  
+  const Icon = {
+    Download: (p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      className={p.className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+      <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>),
+    Upload: (p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      className={p.className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+      <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>),
+    Image: (p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      className={p.className}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+      <circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>)
+  };
+
+  const isValidHex = (v) => /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v.trim());
+  const normHex = (v) => {
+    let s = v.trim();
+    if (!s.startsWith('#')) s = '#' + s;
+    if (s.length === 4) s = '#' + s.slice(1).split('').map(c=>c+c).join('');
+    return s.toLowerCase();
+  };
+
+  function HexInput({ value, onChange, onValidChange, placeholder = "#FFFFFF" }) {
+    const valid = isValidHex(value);
+    return (
+      <input
+        className={`w-full px-2 py-1 border rounded text-sm mono ${
+          valid ? "border-gray-300" : "border-red-500"
+        }`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={(e) => {
+          const v = e.target.value;
+          if (isValidHex(v)) onValidChange(normHex(v));
+        }}
+        placeholder={placeholder}
+      />
+    );
+  }
+
+  function App(){
+    const loadedRef = useRef(false);
+    const [separator, setSeparator] = useState('//');
+    const [inputText, setInputText] = useState('');
+    const [format, setFormat] = useState('square'); // square | portrait | stories
+    const [slides, setSlides] = useState([]);
+    const [collapsed, setCollapsed] = useState({});         // per-slide collapse
+    const [allSettingsCollapsed, setAllSettingsCollapsed] = useState(false);
+    const [sectionsCollapsed, setSectionsCollapsed] = useState({}); // per-slide sections
+	const [uiMode, setUiMode] = useState('Focus'); // 'Focus' | 'Pro'
+	const sheetTextRef = useRef(null);
+	
+	const exportProject = () => {
+	  const data = {
+		version: 1,
+		timestamp: Date.now(),
+		format, separator, global, inputText,
+		slides: slides.map(s => ({
+		  ...s,
+		  // на всякий случай гарантируем простые поля:
+		  image: undefined // DOM-объект не нужен в файле
+		}))
+	  };
+	  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+	  const url = URL.createObjectURL(blob);
+	  const a = document.createElement('a');
+	  a.href = url;
+	  a.download = 'ig-carousel-project.json';
+	  a.click();
+	  URL.revokeObjectURL(url);
+	};
+
+	const importInputRef = useRef(null);
+
+	const handleImportProject = (e) => {
+	  const file = e.target.files?.[0];
+	  if (!file) return;
+	  const reader = new FileReader();
+	  reader.onload = () => {
+		try {
+		  const data = JSON.parse(reader.result);
+		  // применяем глобалки
+		  setFormat(data.format || 'square');
+		  setSeparator(data.separator || '//');
+		  setGlobal(prev => ({ ...prev, ...(data.global || {}) }));
+		  setInputText(data.inputText || '');
+
+		  // восстанавливаем слайды + оживляем картинки из imageUrl
+		  const restored = (data.slides || []).map((s, i) => {
+			const slide = { ...defaultSlide(), ...s, id: s.id ?? i };
+			if (slide.imageUrl) {
+			  const img = new Image();
+			  img.onload = () => {
+				setSlides(prev => prev.map(p => p.id === slide.id ? { ...p, image: img } : p));
+			  };
+			  img.src = slide.imageUrl;
+			}
+			return slide;
+		  });
+		  setSlides(restored);
+
+		  // после импорта считаем, что проект загружен
+		  loadedRef.current = true;
+		  // и сразу автосейв сработает по заведенному эффекту
+		} catch (err) {
+		  alert('Ошибка импорта: ' + err.message);
+		}
+	  };
+	  reader.readAsText(file);
+	  e.target.value = ''; // сброс, чтобы можно было импортировать тот же файл снова
+	};
+
+    const toggleAllSettings = () => {
+      setAllSettingsCollapsed(prev => !prev);
+      setCollapsed(() => {
+        const ns = {};
+        slides.forEach(s => { ns[s.id] = !allSettingsCollapsed; });
+        return ns;
+      });
+    };
+
+    const toggleSection = (slideId, key) => {
+      setSectionsCollapsed(prev => {
+        const base = prev[slideId] || { text:false, bg:false, image:false };
+        return { ...prev, [slideId]: { ...base, [key]: !base[key] } };
+      });
+    };
+
+    // Глобальные настройки (в пресеты и автосохранение)
+    const [global, setGlobal] = useState({
+      fontFamily: "'Montserrat', Arial, sans-serif",
+      fontSize: 48,
+      lineHeight: 1.25,
+      textPosition: 'bottom-left',
+      textColor: '#ffffff',
+      shadow: 0,
+      cornerRadius: 16,
+      showArrow: false,
+      arrowColor: '#ffffff',
+      arrowSize: 40,
+      backgroundColor: '#000000',
+      backgroundOpacity: 0.75,
+      chipRadius: 18,
+      chipPadX: 20,
+      chipPadY: 14,
+      bgMode: 'chip'
+    });
+
+    // iOS standalone + модалка превью
+    const isStandalone =
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+      (window.navigator && window.navigator.standalone === true);
+    const [previewOpen, setPreviewOpen] = useState(false);
+    const [previewIndex, setPreviewIndex] = useState(null);
+    const [previewUrl, setPreviewUrl] = useState(null);
+
+    // пресеты
+    const [presets, setPresets] = useState(() => {
+      try { return JSON.parse(localStorage.getItem('igcb_presets')||'[]'); }
+      catch { return []; }
+    });
+
+	const savePresetGlobals = () => {
+	  const name = prompt('Имя пресета глобальных настроек:');
+	  if (!name) return;
+
+	  const exists = presets.some(p => p.name === name);
+	  if (exists && !confirm(`Пресет «${name}» уже существует. Перезаписать?`)) return;
+
+	  const newPreset = { 
+		kind: 'globals', 
+		name, 
+		settings: { format, separator, global } 
+	  };
+
+	  const updated = [...presets.filter(p => p.name !== name), newPreset];
+	  setPresets(updated);
+	  localStorage.setItem('igcb_presets', JSON.stringify(updated));
+	};
+
+	const saveProjectTemplate = () => {
+	  const name = prompt('Имя шаблона проекта:');
+	  if (!name) return;
+
+	  const exists = presets.some(p => p.name === name);
+	  if (exists && !confirm(`Шаблон «${name}» уже существует. Перезаписать?`)) return;
+
+	  // убираем image из слайдов, чтобы JSON был чище
+	  const safeSlides = slides.map(({ image, ...rest }) => rest);
+
+	  const newPreset = {
+		kind: 'template',
+		name,
+		settings: { format, separator, global, slides: safeSlides }
+	  };
+
+	  const updated = [...presets.filter(p => p.name !== name), newPreset];
+	  setPresets(updated);
+	  localStorage.setItem('igcb_presets', JSON.stringify(updated));
+	};
+
+	const applyPreset = (p) => {
+	  const s = p.settings || {};
+
+	  // Всегда применяем глобальные части
+	  setFormat(s.format || 'square');
+	  setSeparator(s.separator || '//');
+	  setGlobal(prev => ({ ...prev, ...(s.global || {}) }));
+
+	  // Распознаём ТИП
+	  const isTemplate =
+		p.kind === 'template' ||
+		(!!s.slides && Array.isArray(s.slides)); // миграция для старых записей без kind
+
+	  if (isTemplate) {
+		// Полная замена слайдов
+		const restored = (s.slides || []).map((sl, i) => {
+		  const slide = { ...defaultSlide(), ...sl, id: sl.id ?? i, image: null };
+		  if (slide.imageUrl) {
+			const img = new Image();
+			img.onload = () => {
+			  setSlides(prev => prev.map(x => x.id === slide.id ? { ...x, image: img } : x));
+			};
+			img.src = slide.imageUrl;
+		  }
+		  return slide;
+		});
+		setSlides(restored);
+	  } else {
+		// Это «глобальный» пресет — мягко обновляем текущие слайды
+		setSlides(prev => prev.map(sl => ({
+		  ...sl,
+		  textColor:        s.global?.textColor        ?? sl.textColor,
+		  fontSize:         s.global?.fontSize         ?? sl.fontSize,
+		  lineHeight:       s.global?.lineHeight       ?? sl.lineHeight,
+		  fontFamily:       s.global?.fontFamily       ?? sl.fontFamily,
+		  chipPadX:         s.global?.chipPadX         ?? sl.chipPadX,
+		  chipPadY:         s.global?.chipPadY         ?? sl.chipPadY,
+		  chipRadius:       s.global?.chipRadius       ?? sl.chipRadius,
+		  backgroundColor:  s.global?.backgroundColor  ?? sl.backgroundColor,
+		  backgroundOpacity:s.global?.backgroundOpacity?? sl.backgroundOpacity,
+		  bgMode:           s.global?.bgMode           ?? sl.bgMode
+		})));
+	  }
+	};
+
+    const deletePreset = (name) => {
+      if (!confirm(`Удалить пресет «${name}»?`)) return;
+      const updated = presets.filter(p => p.name !== name);
+      setPresets(updated);
+      localStorage.setItem('igcb_presets', JSON.stringify(updated));
+    };
+
+    const canvasRefs = useRef([]);
+	const thumbRefs = useRef([]);
+
+	// Канвас для режима Focus (отдельный от сетки карточек)
+	const focusCanvasRef = useRef(null);
+
+	useEffect(() => {
+	  if (uiMode === 'Focus' && slides[current] && focusCanvasRef.current) {
+		renderSlide(slides[current], focusCanvasRef.current);
+	  }
+	}, [uiMode, current, slides, format, global]);
+	
+	// держим канвас видимым при клавиатуре на iPhone
+	useEffect(() => {
+	  if (uiMode !== 'Focus' || !sheetOpen || sheetTab !== 'text') return;
+	  // небольшой таймаут — даём клавиатуре открыться
+	  const t = setTimeout(() => {
+		const el = document.querySelector('#focus-preview-anchor');
+		el && el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	  }, 150);
+	  return () => clearTimeout(t);
+	}, [uiMode, sheetOpen, sheetTab]);
+
+	const cardRefs = useRef([]);
+	const [current, setCurrent] = useState(0);
+	
+	// === UI modes & overlays ===
+	const [sheetOpen, setSheetOpen] = useState(false);
+	const [sheetTab, setSheetTab] = useState('text'); // 'text' | 'photo' | 'style' | 'export'
+
+	// свайпы по канвасу для переключения слайдов
+	const touchRef = useRef({startX:0, startY:0, active:false});
+	const nextSlide = () => setCurrent(c => Math.min(c+1, slides.length-1));
+	const prevSlide = () => setCurrent(c => Math.max(c-1, 0));
+	useEffect(() => { scrollToSlide(current); }, [current]);
+
+	// открыть/закрыть шторку
+	const openSheet = (tab) => { setSheetTab(tab); setSheetOpen(true); };
+	const closeSheet = () => setSheetOpen(false);
+
+	const scrollToSlide = (i) => {
+	  setCurrent(i);
+	  const el = cardRefs.current[i];
+	  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+	};
+
+    const formats = {
+      square:   { width:1080, height:1080, label:'Квадрат 1:1 (1080×1080)', ratio:'1 / 1' },
+      portrait: { width:1080, height:1350, label:'Карусель 4:5 (1080×1350)', ratio:'4 / 5' },
+      stories:  { width:1080, height:1920, label:'Stories 9:16 (1080×1920)', ratio:'9 / 16' }
+    };
+
+    const textPositions = {
+      'top-left':    { label:'Верх-лево',   align:'left',   y:0.1 },
+      'top-right':   { label:'Верх-право',  align:'right',  y:0.1 },
+      'center':      { label:'Центр',       align:'center', y:0.5 },
+      'bottom-left': { label:'Низ-лево',    align:'left',   y:0.9 },
+      'bottom-right':{ label:'Низ-право',   align:'right',  y:0.9 }
+    };
+
+    const defaultSlide = () => ({
+      id:0, text:'', image:null, imageUrl:null,
+      textPosition: global.textPosition,
+      textColor: global.textColor,
+      fontSize: global.fontSize,
+      backgroundColor: global.backgroundColor,
+      backgroundOpacity: global.backgroundOpacity,
+      bgMode: global.bgMode,
+      chipPadX: global.chipPadX,
+      chipPadY: global.chipPadY,
+      chipRadius: global.chipRadius,
+      lineHeight: global.lineHeight,
+      fontFamily: global.fontFamily,
+      imageOpacity: 1,
+      imageTx: { scale: 1, x: 0, y: 0 }
+    });
+
+    const processText = () => {
+      const t = inputText.trim();
+      if (!t) return;
+      const chunks = (separator ? t.split(separator) : t.split('//'))
+        .map(s => s.replace(/\r\n/g, '\n')).map(s => s.trimEnd());
+      const list = chunks.map((txt,i)=>({ ...defaultSlide(), id:i, text:txt }));
+      setSlides(list);
+    };
+
+    const applyAll = (patch) => {
+      setGlobal(g => ({ ...g, ...patch }));
+      setSlides(prev => prev.map(s => ({ ...s, ...patch })));
+    };
+
+    const handleImageUpload = (slideId,e) => {
+      const file = e.target.files?.[0]; if(!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const img = new Image();
+        img.onload = () => setSlides(prev => prev.map(s => s.id===slideId
+          ? {...s, image:img, imageUrl:ev.target.result, imageTx:{ scale:1, x:0, y:0 }}
+          : s));
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(file);
+      e.target.value = '';
+    };
+
+    const addSlide = () => {
+      setSlides(prev => {
+        const nextId = prev.length ? Math.max(...prev.map(s=>s.id))+1 : 0;
+        return [...prev, { ...defaultSlide(), id: nextId, text: 'Новый слайд' }];
+      });
+    };
+
+    const updateSlide = (id, upd) =>
+      setSlides(prev => prev.map(s => s.id===id ? ({...s,...upd}) : s));
+
+    const toggleCollapse = (id) =>
+      setCollapsed(prev => ({ ...prev, [id]: !prev[id] }));
+
+    const rrect = (ctx,x,y,w,h,r) => {
+      const rr = Math.max(0, Math.min(r, Math.min(w,h)/2));
+      ctx.beginPath();
+      ctx.moveTo(x+rr,y);
+      ctx.arcTo(x+w,y,x+w,y+h,rr);
+      ctx.arcTo(x+w,y+h,x,y+h,rr);
+      ctx.arcTo(x,y+h,x,y,rr);
+      ctx.arcTo(x,y,x+w,y,rr);
+      ctx.closePath();
+    };
+
+	function wrapSelection(wrapper) {
+	  const slide = slides[current];
+	  if (!slide) return;
+	  const ta = sheetTextRef.current;
+	  if (!ta) return;
+
+	  const start = ta.selectionStart ?? 0;
+	  const end   = ta.selectionEnd ?? 0;
+
+	  const before = slide.text.slice(0, start);
+	  const sel    = slide.text.slice(start, end);
+	  const after  = slide.text.slice(end);
+
+	  const open = wrapper === 'bold' ? '**' : '*';
+	  const close = open;
+
+	  const newText =
+		start !== end
+		  ? `${before}${open}${sel}${close}${after}`       // было выделение → оборачиваем
+		  : `${before}${open}${close}${after}`;            // нет выделения → вставляем маркеры
+
+	  updateSlide(slide.id, { text: newText });
+
+	  // восстановим курсор/выделение
+	  requestAnimationFrame(() => {
+		const pos = start !== end ? start + open.length + sel.length + close.length
+								  : start + open.length; // курсор между **|**
+		ta.focus();
+		ta.setSelectionRange(pos, pos);
+	  });
+	}
+
+	function parseStyledRuns(raw) {
+	  let i = 0, bold = false, italic = false, buf = '', out = [];
+	  while (i < raw.length) {
+		if (raw.slice(i, i+2) === '**') {
+		  if (buf) { out.push({ text: buf, bold, italic }); buf=''; }
+		  bold = !bold; i += 2; continue;
+		}
+		if (raw[i] === '*') {
+		  if (buf) { out.push({ text: buf, bold, italic }); buf=''; }
+		  italic = !italic; i += 1; continue;
+		}
+		buf += raw[i++];
+	  }
+	  if (buf) out.push({ text: buf, bold, italic });
+	  return out;
+	}
+
+	function measureToken(ctx, token, fontSize, fontFamily) {
+	  const style = `${token.italic ? 'italic ' : ''}${token.bold ? '700 ' : ''}${fontSize}px ${fontFamily}`;
+	  ctx.font = style;
+	  return ctx.measureText(token.text).width;
+	}
+
+	function splitRunsToTokens(run) {
+	  const parts = run.text.split(/(\s+)/);
+	  return parts.filter(Boolean).map(t => ({ text: t, bold: run.bold, italic: run.italic }));
+	}
+
+	function lineWidth(ctx, tokens, fontSize, fontFamily) {
+	  return tokens.reduce((w, t) => w + measureToken(ctx, t, fontSize, fontFamily), 0);
+	}
+
+	function wrapStyled(rawText, ctx, maxWidth, fontSize, fontFamily) {
+	  const paragraphs = rawText.replace(/\r\n/g, '\n').split('\n');
+	  const lines = [];
+	  for (const p of paragraphs) {
+		const runs = parseStyledRuns(p);
+		const tokens = runs.flatMap(splitRunsToTokens);
+		let cur = [];
+		let curW = 0;
+		for (const tk of tokens) {
+		  const w = measureToken(ctx, tk, fontSize, fontFamily);
+		  if (tk.text === ' ') { cur.push(tk); curW += w; continue; }
+		  if (curW + w > maxWidth && cur.length) {
+			if (cur.length && cur[cur.length-1].text === ' ') cur.pop();
+			lines.push(cur);
+			cur = [tk];
+			curW = measureToken(ctx, tk, fontSize, fontFamily);
+		  } else {
+			cur.push(tk); curW += w;
+		  }
+		}
+		if (cur.length) {
+		  if (cur[cur.length-1].text === ' ') cur.pop();
+		  lines.push(cur);
+		}
+		if (p === '') lines.push([]);
+	  }
+	  return lines;
+	}
+
+    const renderSlide = (slide, canvas) => {
+      if(!canvas) return;
+      const { width, height } = formats[format];
+      const ctx = canvas.getContext('2d', { alpha: true });
+      canvas.width = width; canvas.height = height;
+      ctx.clearRect(0,0,width,height);
+      ctx.imageSmoothingEnabled = true;
+
+      // ==== Фото / фон ====
+      if (slide.image){
+        const ir = slide.image.width / slide.image.height;
+        const cr = width / height;
+        let dw, dh, ox, oy;
+        if (ir > cr) { dh = height; dw = height * ir; ox = (width - dw) / 2; oy = 0; }
+        else {        dw = width;  dh = width / ir;   ox = 0;              oy = (height - dh)/2; }
+
+        const scale = Math.max(0.2, Math.min(5, slide.imageTx?.scale ?? 1));
+        const offX  = slide.imageTx?.x ?? 0;
+        const offY  = slide.imageTx?.y ?? 0;
+
+        const drawW = dw * scale;
+        const drawH = dh * scale;
+        const dx = Math.round(ox + offX + (dw - drawW) / 2);
+        const dy = Math.round(oy + offY + (dh - drawH) / 2);
+
+        const alpha = slide.imageOpacity ?? 1;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(slide.image, dx, dy, drawW, drawH);
+        ctx.restore();
+      } else {
+        const g = ctx.createLinearGradient(0, 0, 0, height);
+        g.addColorStop(0, '#667eea'); 
+        g.addColorStop(1, '#764ba2');
+        ctx.fillStyle = g; 
+        ctx.fillRect(0, 0, width, height);
+      }
+
+	// ==== Текст и подложки ====
+	const pos = {
+	  'top-left':    { align:'left',   y:0.1 },
+	  'top-right':   { align:'right',  y:0.1 },
+	  'center':      { align:'center', y:0.5 },
+	  'bottom-left': { align:'left',   y:0.9 },
+	  'bottom-right':{ align:'right',  y:0.9 }
+	}[slide.textPosition];
+
+	const maxWidth = width * 0.8;
+	const lineH = slide.fontSize * (slide.lineHeight || 1.25);
+
+	// базовый font перед замерами
+	ctx.font = `${slide.fontSize}px ${slide.fontFamily || "Arial, sans-serif"}`;
+	ctx.textBaseline = 'alphabetic';
+
+	// 1) разбиение на токены с учетом **/***
+	const tokenLines = wrapStyled(slide.text, ctx, maxWidth, slide.fontSize, slide.fontFamily || "Arial, sans-serif");
+	const totalH = tokenLines.length * lineH;
+
+	// 2) стартовая Y
+	let startY;
+	if (pos.y === 0.1)      startY = Math.round(height*0.1 + slide.fontSize);
+	else if (pos.y === 0.5) startY = Math.round((height-totalH)/2 + slide.fontSize);
+	else                    startY = Math.round(height*0.9 - totalH + slide.fontSize);
+
+	// 3) подложки / градиенты (как было, но с точной шириной строк)
+	const hexToRgb = (hex) => { let h = hex.replace('#',''); if (h.length===3) h = h.split('').map(c=>c+c).join(''); const n = parseInt(h,16); return { r:(n>>16)&255, g:(n>>8)&255, b:n&255 }; };
+	const { r,g,b } = hexToRgb(slide.backgroundColor);
+
+	if (slide.bgMode === 'full-gradient'){
+	  let grad;
+	  if (pos.y===0.1){
+		grad = ctx.createLinearGradient(0,0,0,height*0.6);
+		grad.addColorStop(0,`rgba(${r},${g},${b},${slide.backgroundOpacity})`);
+		grad.addColorStop(1,`rgba(${r},${g},${b},0)`);
+		ctx.fillStyle=grad; ctx.fillRect(0,0,width,height*0.6);
+	  } else if (pos.y===0.9){
+		grad = ctx.createLinearGradient(0,height*0.4,0,height);
+		grad.addColorStop(0,`rgba(${r},${g},${b},0)`);
+		grad.addColorStop(1,`rgba(${r},${g},${b},${slide.backgroundOpacity})`);
+		ctx.fillStyle=grad; ctx.fillRect(0,height*0.4,width,height*0.6);
+	  } else {
+		grad = ctx.createLinearGradient(0,height*0.25,0,height*0.75);
+		grad.addColorStop(0,`rgba(${r},${g},${b},0)`);
+		grad.addColorStop(0.5,`rgba(${r},${g},${b},${slide.backgroundOpacity})`);
+		grad.addColorStop(1,`rgba(${r},${g},${b},0)`);
+		ctx.fillStyle=grad; ctx.fillRect(0,height*0.25,width,height*0.5);
+	  }
+	}
+	if (slide.bgMode === 'highlight'){
+	  const bgH = totalH + slide.chipPadY*2;
+	  const bgY = startY - slide.fontSize - slide.chipPadY;
+	  ctx.fillStyle = `rgba(${r},${g},${b},${slide.backgroundOpacity})`;
+	  rrect(ctx, width*0.1 - slide.chipPadX, bgY, maxWidth + slide.chipPadX*2, bgH, slide.chipRadius);
+	  ctx.fill();
+	}
+	if (slide.bgMode === 'chip'){
+	  ctx.fillStyle = `rgba(${r},${g},${b},${slide.backgroundOpacity})`;
+	  tokenLines.forEach((toks, i) => {
+		const w = lineWidth(ctx, toks, slide.fontSize, slide.fontFamily || "Arial, sans-serif");
+		const y = startY + i*lineH;
+		let x;
+		if (pos.align === 'center') x = width/2 - w/2;
+		else if (pos.align === 'right') x = width*0.9 - w;
+		else x = width*0.1;
+		rrect(ctx, Math.round(x - slide.chipPadX),
+			  Math.round(y - slide.fontSize - slide.chipPadY + 6),
+			  Math.round(w + slide.chipPadX*2),
+			  Math.round(slide.fontSize + slide.chipPadY*2),
+			  slide.chipRadius);
+		ctx.fill();
+	  });
+	}
+	// 4) тень
+	if (global.shadow > 0){
+	  ctx.shadowColor = `rgba(0,0,0,${global.shadow})`;
+	  ctx.shadowBlur = 8;
+	} else { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; }
+	// 5) вывод строк по токенам
+	tokenLines.forEach((toks, i) => {
+	  const y = startY + i*lineH;
+	  const w = lineWidth(ctx, toks, slide.fontSize, slide.fontFamily || "Arial, sans-serif");
+	  let x;
+	  if (pos.align === 'center') x = Math.round(width/2 - w/2);
+	  else if (pos.align === 'right') x = Math.round(width*0.9 - w);
+	  else x = Math.round(width*0.1);
+	  let cursor = x;
+	  for (const tk of toks) {
+		ctx.fillStyle = slide.textColor;
+		ctx.font = `${tk.italic ? 'italic ' : ''}${tk.bold ? '700 ' : ''}${slide.fontSize}px ${slide.fontFamily || "Arial, sans-serif"}`;
+		ctx.textAlign = 'left';
+		ctx.fillText(tk.text, cursor, Math.round(y));
+		cursor += measureToken(ctx, tk, slide.fontSize, slide.fontFamily || "Arial, sans-serif");
+	  }
+	});
+      if (global.showArrow){
+        ctx.save();
+        ctx.fillStyle = global.arrowColor || '#ffffff';
+        ctx.font = `${global.arrowSize}px Arial, sans-serif`;
+        ctx.textAlign='right';
+        ctx.fillText('›', Math.round(width*0.95), Math.round(height*0.96));
+        ctx.restore();
+      }
+    };
+	// === Styled text helpers: **bold**, *italic* ===
+    const renderSlideBlob = (slide, index) =>
+      new Promise((resolve, reject) => {
+        const canvas = canvasRefs.current[index];
+        if (!canvas) return reject(new Error('Canvas not ready'));
+        renderSlide(slide, canvas);
+        canvas.toBlob((blob) => {
+          if (!blob) return reject(new Error('toBlob failed'));
+          resolve(blob);
+        }, 'image/png', 1.0);
+      });
+    const openPreviewModal = async (slide, index) => {
+      const blob = await renderSlideBlob(slide, index);
+      const url = URL.createObjectURL(blob);
+      setPreviewUrl(url);
+      setPreviewIndex(index);
+      setPreviewOpen(true);
+    };
+    const closePreviewModal = () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(null);
+      setPreviewIndex(null);
+      setPreviewOpen(false);
+    };
+    const downloadSlide = async (slide, index) => {
+      if (isStandalone) {
+        try {
+          const blob = await renderSlideBlob(slide, index);
+          const file = new File([blob], `slide-${index+1}.png`, { type: 'image/png' });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: `Слайд ${index+1}`, text: 'Сохраните/поделитесь изображением' });
+            return;
+          }
+          await openPreviewModal(slide, index);
+          return;
+        } catch {
+          await openPreviewModal(slide, index);
+          return;
+        }
+      }
+      const canvas = canvasRefs.current[index];
+      if (!canvas) return;
+      renderSlide(slide, canvas);
+      setTimeout(() => {
+        const url = canvas.toDataURL('image/png');
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `slide-${index+1}.png`;
+        a.click();
+      }, 20);
+    };
+    // АВТОСОХРАНЕНИЕ - не пишем, пока не восстановились
+	useEffect(() => {
+	  if (!loadedRef.current) return;
+	  try {
+		const safeSlides = slides.map(s => {
+		  const { image, ...rest } = s;   // <-- не сохраняем DOM Image
+		  return rest;
+		});
+		const project = { slides: safeSlides, global, format, separator, inputText };
+		localStorage.setItem('igcb_project', JSON.stringify(project));
+	  } catch (e) {
+		console.warn('Автосохранение не удалось', e);
+	  }
+	}, [slides, global, format, separator, inputText]);
+    // Авто-рендер при изменениях
+    useEffect(()=>{ slides.forEach((s,i)=>{ const c=canvasRefs.current[i]; c && renderSlide(s,c); }); }, [slides,format,global]);
+	useEffect(() => {
+	  slides.forEach((s, i) => {
+		const c = thumbRefs.current[i];
+		if (c) renderSlide(s, c);
+	  });
+	}, [slides, format, global]);
+
+    // === ВОССТАНОВЛЕНИЕ ПРИ ЗАПУСКЕ ===
+	useEffect(() => {
+	  try {
+		const saved = JSON.parse(localStorage.getItem('igcb_project'));
+		if (saved) {
+		  setFormat(saved.format || 'square');
+		  setSeparator(saved.separator || '//');
+		  setGlobal(prev => ({ ...prev, ...(saved.global || {}) }));
+		  setInputText(saved.inputText || '');
+
+		  const restored = (saved.slides || []).map((s, i) => {
+			const slide = { ...defaultSlide(), ...s, id: s.id ?? i, image: null }; // <-- image всегда null
+			if (slide.imageUrl) {
+			  const img = new Image();
+			  img.onload = () => {
+				setSlides(prev => prev.map(p => p.id === slide.id ? { ...p, image: img } : p));
+			  };
+			  img.src = slide.imageUrl;
+			}
+			return slide;
+		  });
+		  setSlides(restored);
+		}
+	  } catch (e) {
+		console.warn("Ошибка восстановления проекта", e);
+	  }
+	  loadedRef.current = true;
+	}, []);
+    const FormatPicker = ({compact=false}) => (
+      <div className={'flex '+(compact?'gap-2':'gap-3')}>
+        <select value={format} onChange={(e)=>setFormat(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+          <option value="square">{formats.square.label}</option>
+          <option value="portrait">{formats.portrait.label}</option>
+          <option value="stories">{formats.stories.label}</option>
+        </select>
+      </div>
+    );
+    const FontFamilySelect = () => (
+      <select value={global.fontFamily}
+        onChange={(e)=>applyAll({ fontFamily:e.target.value })}
+        className="w-full px-3 py-2 border rounded text-sm mb-2">
+        <option value="'Montserrat', Arial, sans-serif">Montserrat</option>
+        <option value="'Inter', Arial, sans-serif">Inter</option>
+        <option value="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', sans-serif">System UI</option>
+        <option value="Arial, 'Helvetica Neue', Helvetica, sans-serif">Arial / Helvetica</option>
+        <option value="'Trebuchet MS', Helvetica, sans-serif">Trebuchet MS</option>
+        <option value="Verdana, Geneva, sans-serif">Verdana</option>
+        <option value="Tahoma, Geneva, sans-serif">Tahoma</option>
+        <option value="'Lucida Sans Unicode', 'Lucida Grande', sans-serif">Lucida Sans</option>
+        <option value="Georgia, 'Times New Roman', Times, serif">Georgia / Times</option>
+        <option value="'Times New Roman', Times, serif">Times New Roman</option>
+        <option value="'Courier New', Courier, monospace">Courier New</option>
+        <option value="Impact, Charcoal, sans-serif">Impact</option>
+      </select>
+    );
+    return (
+      <div className="safe-area p-4">
+	  
+		{/* MODE TOGGLE (always visible) */}
+		<div className="fixed top-2 left-2 z-50">
+		  <button
+			onClick={() => setUiMode(m => (m === 'Focus' ? 'Pro' : 'Focus'))}
+			className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs shadow"
+			aria-label="Toggle Focus/Pro"
+		  >
+			{uiMode === 'Focus' 
+			  ? '➡🖥'   // Pro → Desktop 🖥️
+			  : '➡📱'    // Focus → Mobile 📱
+			}
+
+		  </button>
+		</div>
+		{/* === OVERLAY HEADER === */}
+		{slides.length > 0 && uiMode === 'Focus' && (
+		  <div className="fixed top-0 left-0 right-0 z-40 pointer-events-none">
+			<div className="mx-auto max-w-3xl sm:max-w-5xl mt-2 px-3">
+			  <div className="pointer-events-auto flex items-center justify-between bg-white/80 backdrop-blur rounded-2xl shadow p-2">
+				<div className="text-sm font-medium text-slate-700">
+				  Слайд {current+1} / {slides.length}
+				</div>
+				<button
+				  onClick={() => openSheet('export')}
+				  className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg"
+				>
+				  Сохранить
+				</button>
+			  </div>
+			</div>
+		  </div>
+		)}		
+		{slides.length > 0 && uiMode === 'Focus' && (
+		  <div id="focus-preview-anchor" className="pt-16 pb-28 max-w-3xl sm:max-w-5xl mx-auto">
+			<div className="relative bg-white rounded-xl shadow p-3">
+			  <div className="relative bg-gray-100 rounded-lg overflow-hidden" style={{ aspectRatio: formats[format].ratio }}>
+				{/* используем тот же canvasRefs -> показываем текущий */}
+				<canvas
+				  ref={focusCanvasRef}
+				  className="absolute inset-0 w-full h-full"
+				/>
+			  </div>
+			</div>
+		  </div>
+		)}
+		{/* === OVERLAY ACTION BAR === */}
+		{slides.length > 0 && uiMode === 'Focus' && (
+		  <div className="fixed bottom-3 left-0 right-0 z-40 pointer-events-none">
+			<div className="mx-auto max-w-3xl sm:max-w-5xl px-3">
+			  <div className="pointer-events-auto grid grid-cols-4 gap-2 bg-white/90 backdrop-blur rounded-2xl shadow p-2">
+				<button onClick={() => openSheet('text')}  className={`py-2 rounded-lg ${sheetTab==='text' && sheetOpen?'bg-slate-900 text-white':'bg-slate-100'}`}>Текст</button>
+				<button onClick={() => openSheet('photo')} className={`py-2 rounded-lg ${sheetTab==='photo'&& sheetOpen?'bg-slate-900 text-white':'bg-slate-100'}`}>Фото</button>
+				<button onClick={() => openSheet('style')} className={`py-2 rounded-lg ${sheetTab==='style'&& sheetOpen?'bg-slate-900 text-white':'bg-slate-100'}`}>Стиль</button>
+				<button onClick={() => openSheet('export')}className={`py-2 rounded-lg ${sheetTab==='export'&& sheetOpen?'bg-slate-900 text-white':'bg-slate-100'}`}>Экспорт</button>
+			  </div>
+			</div>
+		  </div>
+		)}
+			{/* === MINI PREVIEW DOCK === */}
+			<div
+			  className="fixed z-40"
+			  style={{ bottom: '16px', right: '16px' }}
+			  onPointerDown={(e)=>{
+				const el = e.currentTarget;
+				const start = {x:e.clientX, y:e.clientY};
+				const rect = el.getBoundingClientRect();
+				const off = {x: start.x - rect.left, y: start.y - rect.top};
+				const move = (ev)=>{
+				  el.style.left = `${Math.max(8, ev.clientX - off.x)}px`;
+				  el.style.top  = `${Math.max(8, ev.clientY - off.y)}px`;
+				  el.style.right = 'auto'; el.style.bottom = 'auto';
+				  el.setPointerCapture(ev.pointerId);
+				};
+				const up = (ev)=>{
+				  el.releasePointerCapture(ev.pointerId);
+				  window.removeEventListener('pointermove', move);
+				  window.removeEventListener('pointerup', up);
+				};
+				window.addEventListener('pointermove', move);
+				window.addEventListener('pointerup', up);
+			  }}
+			>
+			  <div className="bg-white/90 backdrop-blur shadow-xl rounded-2xl p-2 flex gap-2 overflow-x-auto max-w-[80vw]">
+				{/* ...оставь внутреннюю разметку кнопок как есть... */}
+			  </div>
+			</div>
+			{/* === BOTTOM SHEET === */}
+			{slides.length > 0 && uiMode === 'Focus' && (
+			  <div
+				className={`fixed left-0 right-0 bottom-0 z-50 transition-transform duration-300 ${sheetOpen ? 'translate-y-0' : 'translate-y-full'}`}
+				style={{ height: '40svh' }}
+			  >
+				<div className="mx-auto max-w-3xl sm:max-w-5xl h-full bg-white rounded-t-2xl shadow-2xl">
+				  <div className="flex items-center justify-between p-3 border-b">
+					<div className="text-sm font-semibold capitalize">{sheetTab}</div>
+					<div className="flex items-center gap-2">
+					  <button onClick={() => setSheetOpen(false)} className="px-3 py-1.5 text-sm bg-slate-100 rounded-lg">Свернуть</button>
+					</div>
+				  </div>
+				  <div className="p-3 overflow-auto h-[calc(40svh-48px)]">
+					{sheetTab === 'text' && slides[current] && (
+					  <div className="space-y-3">
+						<textarea
+						  ref={sheetTextRef}
+						  value={slides[current].text}
+						  onChange={(e)=>updateSlide(slides[current].id,{text:e.target.value})}
+						  rows={6}
+						  className="w-full px-3 py-2 border rounded"
+						  placeholder="Текст слайда…"
+						/>
+						<div className="flex items-center gap-2">
+						  <button onClick={()=>wrapSelection('bold')}  className="px-3 py-1.5 bg-slate-100 rounded">B</button>
+						  <button onClick={()=>wrapSelection('italic')} className="px-3 py-1.5 bg-slate-100 rounded">i</button>
+						  <button onClick={()=>{
+							const t = `${separator||'//'}`;
+							updateSlide(slides[current].id,{ text: (slides[current].text||'') + t });
+						  }} className="px-3 py-1.5 bg-slate-100 rounded">↲ разделить</button>
+						</div>
+					  </div>
+					)}
+					{sheetTab === 'photo' && slides[current] && (
+					  <div className="grid grid-cols-3 gap-3">
+						<label className="text-xs">Scale
+						  <input type="range" min="0.2" max="5" step="0.01"
+							value={slides[current].imageTx?.scale ?? 1}
+							onChange={(e)=>updateSlide(slides[current].id,{ imageTx:{...slides[current].imageTx, scale:parseFloat(e.target.value)} })}
+						  />
+						</label>
+						<label className="text-xs">X
+						  <input type="range" min="-1000" max="1000" step="1"
+							value={slides[current].imageTx?.x ?? 0}
+							onChange={(e)=>updateSlide(slides[current].id,{ imageTx:{...slides[current].imageTx, x:parseInt(e.target.value,10)} })}
+						  />
+						</label>
+						<label className="text-xs">Y
+						  <input type="range" min="-1000" max="1000" step="1"
+							value={slides[current].imageTx?.y ?? 0}
+							onChange={(e)=>updateSlide(slides[current].id,{ imageTx:{...slides[current].imageTx, y:parseInt(e.target.value,10)} })}
+						  />
+						</label>
+						<div className="col-span-3">
+						  <button onClick={()=>updateSlide(slides[current].id,{ imageTx:{scale:1,x:0,y:0} })}
+							className="px-3 py-1.5 bg-slate-100 rounded">Сбросить позицию</button>
+						</div>
+					  </div>
+					)}
+					{sheetTab === 'style' && (
+					  <div className="grid grid-cols-2 gap-3">
+						<label className="text-xs">Размер
+						  <input type="range" min="24" max="120"
+							value={slides[current]?.fontSize ?? global.fontSize}
+							onChange={(e)=>updateSlide(slides[current].id,{ fontSize:parseInt(e.target.value,10) })}
+						  />
+						</label>
+						<label className="text-xs">Межстрочный
+						  <input type="range" min="1.0" max="1.8" step="0.05"
+							value={slides[current]?.lineHeight ?? global.lineHeight}
+							onChange={(e)=>updateSlide(slides[current].id,{ lineHeight:parseFloat(e.target.value) })}
+						  />
+						</label>
+					  </div>
+					)}
+					{sheetTab === 'export' && (
+					  <div className="space-y-3">
+						<button
+						  onClick={async ()=>{
+							// текущий слайд через существующий downloadSlide
+							await downloadSlide(slides[current], current);
+						  }}
+						  className="px-4 py-2 bg-blue-600 text-white rounded"
+						>Сохранить текущий</button>
+
+						<button
+						  onClick={async ()=>{
+							// батч шаринга (см. Safari/Web Share)
+							const canShare = !!navigator.canShare;
+							if (canShare && isStandalone) {
+							  const batch = [];
+							  for (let i=0;i<slides.length;i++){
+								const blob = await renderSlideBlob(slides[i], i);
+								batch.push(new File([blob], `slide-${i+1}.png`, {type:'image/png'}));
+								if (batch.length === 6 || i === slides.length-1) {
+								  try { await navigator.share({files: batch, title:'INSTA EASY'}); } catch {}
+								  batch.length = 0;
+								}
+							  }
+							} else {
+							  // запасной путь: авто-скачивание по одному
+							  slides.forEach((s,i)=>setTimeout(()=>downloadSlide(s,i), i*500));
+							}
+						  }}
+						  className="px-4 py-2 bg-slate-900 text-white rounded"
+						>Сохранить все</button>
+					  </div>
+					)}
+				  </div>
+				</div>
+			  </div>
+			)}
+		{/* === Первый блок — ввод и пресеты === */}
+		{uiMode === 'Pro' && (
+		  <div className="max-w-3xl mx-auto">
+			<div className="bg-white rounded-xl shadow-lg p-6 sm:p-8">
+			  <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-6 text-center">
+				INSTA EASY
+			  </h1>
+			  <div className="grid sm:grid-cols-2 gap-4">
+				<div>
+				  <label className="block text-sm font-medium text-gray-700 mb-2">Формат</label>
+				  <FormatPicker />
+				</div>
+				<div>
+				  <label className="block text-sm font-medium text-gray-700 mb-2">Разделитель страниц</label>
+				  <input
+					type="text"
+					value={separator}
+					onChange={(e)=>setSeparator(e.target.value)}
+					className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+					placeholder="//"
+				  />
+				</div>
+			  </div>
+			  <div className="mt-4">
+				<label className="block text-sm font-medium text-gray-700 mb-2">
+				  Текст поста (разделённый «{separator||'//'}»)
+				</label>
+				<textarea
+				  value={inputText}
+				  onChange={(e)=>setInputText(e.target.value)}
+				  rows={8}
+				  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+				  placeholder={`Первый слайд${separator}Второй слайд${separator}...`}
+				/>
+			  </div>
+			  <div className="text-xs text-slate-500 mt-1">
+				Форматирование: <span className="font-semibold">**жирный**</span>, <em>*курсив*</em>.
+			  </div>
+
+			  <div className="flex flex-wrap gap-3 mt-4">
+				<button
+				  onClick={processText}
+				  disabled={!inputText.trim()}
+				  className="flex-1 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed font-medium"
+				>
+				  Создать слайды
+				</button>
+			  </div>
+			</div>
+		  </div>
+		)}  {/* ← закрыли условие Pro */}
+		{/* === Второй блок — появляется, когда есть слайды === */}
+        {slides.length > 0 && uiMode === 'Pro' && (
+          <div className="max-w-7xl mx-auto mt-10">
+            <div className="bg-white rounded-xl shadow-lg p-4 sm:p-6 mb-6">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <h2 className="text-lg sm:text-xl font-semibold text-gray-800">Настройка всех слайдов</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  <FormatPicker compact />
+                  <button onClick={addSlide}
+                    className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">
+                    + Добавить слайд
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!slides.length) return;
+                      if (isStandalone) {
+                        for (let i = 0; i < slides.length; i++) {
+                          try { await downloadSlide(slides[i], i); }
+                          catch { await openPreviewModal(slides[i], i); break; }
+                        }
+                      } else {
+                        slides.forEach((s,i)=>setTimeout(()=>downloadSlide(s,i), i*500));
+                      }
+                    }}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                    <Icon.Download className="w-4 h-4" /> Сохранить все
+                  </button>
+                  <button
+                    onClick={toggleAllSettings}
+                    className="px-3 py-2 text-sm bg-indigo-500 text-white rounded hover:bg-indigo-600"
+                  >
+                    {allSettingsCollapsed ? "Развернуть ⚙️ слайдов" : "Свернуть ⚙️ слайдов"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm("Начать новый проект? Текущие данные будут удалены.")) {
+                        setInputText('');
+                        setSlides([]);
+                        setGlobal({
+                          fontFamily: "'Montserrat', Arial, sans-serif",
+                          fontSize: 48,
+                          lineHeight: 1.25,
+                          textPosition: 'bottom-left',
+                          textColor: '#ffffff',
+                          shadow: 0,
+                          cornerRadius: 16,
+                          showArrow: false,
+                          arrowColor: '#ffffff',
+                          arrowSize: 40,
+                          backgroundColor: '#000000',
+                          backgroundOpacity: 0.75,
+                          chipRadius: 18,
+                          chipPadX: 20,
+                          chipPadY: 14,
+                          bgMode: 'chip'
+                        });
+                        localStorage.removeItem('igcb_project');
+                      }
+                    }}
+                    className="px-3 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                  >
+                    🧹🗑️🚮 проект
+                  </button>
+                </div>
+              </div>
+              {/* Пресеты (низ) */}
+              <div className="mt-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-gray-700">Пресеты</span>
+                  <button onClick={savePresetGlobals}
+                    className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200">Сохранить пресет (общие ⚙️)</button>
+                </div>
+                {presets.length === 0 && (
+                  <div className="text-xs text-gray-500">Пока нет сохранённых пресетов</div>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {presets.map((p) => (
+                    <div key={p.name} className="flex items-center gap-1">
+                      <button onClick={() => applyPreset(p)}
+                        className="px-3 py-1.5 rounded bg-gray-100 hover:bg-gray-200 text-sm">{p.name}</button>
+                      <button onClick={() => deletePreset(p.name)}
+                        className="text-red-500 hover:text-red-700 text-sm">🗑</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* Глобальные настройки */}
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mt-3">
+                <div className="bg-slate-50 p-3 rounded-lg">
+                  <div className="text-xs font-bold text-slate-600 mb-2">Текст</div>
+
+                  <label className="text-xs text-slate-600">Шрифт</label>
+                  <FontFamilySelect />
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs text-slate-600">Размер текста</label>
+                      <input type="range" min="24" max="120" value={global.fontSize}
+                        onChange={(e)=>applyAll({ fontSize: parseInt(e.target.value,10) })}
+                        className="w-full" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-600">Точно (px)</label>
+                      <input type="number" min="8" max="200" step="1"
+                        value={global.fontSize}
+                        onChange={(e)=>applyAll({ fontSize: parseInt(e.target.value||'0',10) || 0 })}
+                        className="w-full px-2 py-1 border rounded text-sm mono" />
+                    </div>
+                  </div>
+                  <label className="text-xs text-slate-600 mt-2 block">Межстрочный</label>
+                  <input type="range" min="1.0" max="1.8" step="0.05" value={global.lineHeight}
+                    onChange={(e)=>applyAll({ lineHeight:parseFloat(e.target.value) })}
+                    className="w-full" />
+
+                  <label className="text-xs text-slate-600 mt-2 block">Позиция</label>
+                  <select
+                    value={global.textPosition}
+                    onChange={(e)=>applyAll({ textPosition: e.target.value })}
+                    className="w-full px-3 py-2 border rounded text-sm mb-2"
+                  >
+                    <option value="top-left">Верх-лево</option>
+                    <option value="top-right">Верх-право</option>
+                    <option value="center">Центр</option>
+                    <option value="bottom-left">Низ-лево</option>
+                    <option value="bottom-right">Низ-право</option>
+                  </select>
+                  <div className="grid grid-cols-2 gap-2 mt-1">
+                    <div>
+                      <label className="text-xs text-slate-600">Цвет текста</label>
+                      <input type="color" value={global.textColor}
+                        onChange={(e)=>applyAll({ textColor:e.target.value })}
+                        className="w-full h-10 border rounded" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-600">🎨</label>
+                      <HexInput
+                        value={global.textColor}
+                        onChange={(v)=>applyAll({ textColor: v })}
+                        onValidChange={(v)=>applyAll({ textColor: v })}
+                        placeholder="#FFFFFF"
+                      />
+                    </div>
+                  </div>
+                  <div className="mt-2">
+                    <label className="inline-flex items-center gap-2">
+                      <span className="text-xs text-slate-600">Тень текста</span>
+                      <input type="range" min="0" max="1" step="0.05" value={global.shadow}
+                        onChange={(e)=>applyAll({ shadow: parseFloat(e.target.value) })}
+                      />
+                    </label>
+                    <div className="text-[11px] text-slate-500 mt-1">
+                      0 = максимально чётко (рекомендуется для iPhone)
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg">
+                  <div className="text-xs font-bold text-slate-600 mb-2">Подложка</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs text-slate-600">Режим</label>
+                      <select value={global.bgMode} onChange={(e)=>applyAll({ bgMode:e.target.value })}
+                        className="w-full px-3 py-2 border rounded text-sm">
+                        <option value="chip">Highlight под буквами</option>
+                        <option value="highlight">Highlight цельный блок</option>
+                        <option value="full-gradient">Градиент по ширине</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-600">Цвет</label>
+                      <input type="color" value={global.backgroundColor}
+                        onChange={(e)=>applyAll({ backgroundColor:e.target.value })}
+                        className="w-full h-10 border rounded" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label className="text-xs text-slate-600">🎨</label>
+                      <HexInput
+                        value={global.backgroundColor}
+                        onChange={(v)=>applyAll({ backgroundColor: v })}
+                        onValidChange={(v)=>applyAll({ backgroundColor: v })}
+                        placeholder="#000000"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-600">Непрозрачность</label>
+                      <input type="range" min="0" max="1" step="0.05" value={global.backgroundOpacity}
+                        onChange={(e)=>applyAll({ backgroundOpacity:parseFloat(e.target.value) })}
+                        className="w-full" />
+                    </div>
+                  </div>
+                  <div className="mt-2">
+                    <label className="text-xs text-slate-600 block mb-1">Скругление</label>
+                    <input type="range" min="8" max="40" value={global.chipRadius}
+                      onChange={(e)=>applyAll({ chipRadius:parseInt(e.target.value,10) })}
+                      className="w-full" />
+                  </div>
+                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs text-slate-600 block mb-1">Отступ X</label>
+                      <input type="range" min="8" max="40" value={global.chipPadX}
+                        onChange={(e)=>applyAll({ chipPadX:parseInt(e.target.value,10) })}
+                        className="w-full" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-600 block mb-1">Отступ Y</label>
+                      <input type="range" min="6" max="30" value={global.chipPadY}
+                        onChange={(e)=>applyAll({ chipPadY:parseInt(e.target.value,10) })}
+                        className="w-full" />
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg">
+                  <div className="text-xs font-bold text-slate-600 mb-2">Прочие ⚙️</div>
+
+                  <label className="inline-flex items-center gap-2 mb-2">
+                    <input
+                      type="checkbox"
+                      checked={global.showArrow}
+                      onChange={(e)=>setGlobal(g=>({ ...g, showArrow:e.target.checked }))}
+                    />
+                    <span className="text-sm">Показывать стрелку свайпа</span>
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs text-slate-600">Цвет стрелки</label>
+                      <input
+                        type="color"
+                        value={global.arrowColor}
+                        onChange={(e)=>setGlobal(g=>({ ...g, arrowColor:e.target.value }))}
+                        className="w-full h-10 border rounded"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-600">🎨</label>
+                      <HexInput
+                        value={global.arrowColor}
+                        onChange={(v)=>setGlobal(g=>({ ...g, arrowColor: v }))}
+                        onValidChange={(v)=>setGlobal(g=>({ ...g, arrowColor: v }))}
+                        placeholder="#FFFFFF"
+                      />
+                    </div>
+                  </div>
+                  <div className="mt-2">
+                    <label className="text-xs text-slate-600">Размер стрелки</label>
+                    <input
+                      type="range"
+                      min="16"
+                      max="120"
+                      value={global.arrowSize}
+                      onChange={(e)=>setGlobal(g=>({ ...g, arrowSize: parseInt(e.target.value,10) }))}
+                      className="w-full"
+                    />
+                  </div>
+				<div className="mt-4 pt-3 border-t border-slate-200">
+				  <div className="text-xs font-bold text-slate-600 mb-2">Шаблон всего проекта</div>
+				  <div className="text-xs text-slate-600 mb-2">
+					Все поля всех слайдов будут сохранены
+				  </div>
+
+				  <div className="flex flex-col space-y-2 mt-2">
+					<button
+					  onClick={saveProjectTemplate}
+					  className="w-full px-3 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+					>
+					  Сохранить пресет всех слайдов
+					</button>
+
+					<button
+					  onClick={exportProject}
+					  className="w-full px-3 py-2 text-sm bg-gray-600 text-white rounded hover:bg-gray-700"
+					>
+					  Экспорт проекта (.json)
+					</button>
+
+					<label className="w-full px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 cursor-pointer text-center">
+					  Импорт проекта (.json)
+					  <input
+						type="file"
+						accept="application/json"
+						ref={importInputRef}
+						onChange={handleImportProject}
+						className="hidden-input"
+					  />
+					</label>
+				  </div>
+				</div>
+								  
+                </div>
+              </div>
+            </div>
+			
+            {/* Карточки слайдов */}
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 sm:gap-6">
+              {slides.map((slide, index)=>{
+                const sc = sectionsCollapsed[slide.id] || { text:false, bg:false, image:false };
+                return (
+                <div key={slide.id} className="bg-white rounded-xl shadow-lg p-4 sm:p-6">
+				   <div ref={el => (cardRefs.current[index] = el)}>
+                  {/* Шапка */}
+					  <div className="flex items-center justify-between mb-2">
+						<h3 className="font-semibold text-gray-800">Слайд {index + 1}</h3>
+						<div className="flex items-center gap-2">
+						  <button
+							onClick={() => toggleCollapse(slide.id)}
+							className="px-2.5 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white rounded text-sm"
+							aria-expanded={!collapsed[slide.id]}
+							aria-controls={`slide-settings-${slide.id}`}
+						  >
+							{collapsed[slide.id] ? 'Развернуть ⚙️' : 'Свернуть ⚙️'}
+						  </button>
+						  <button
+							onClick={() => downloadSlide(slide, index)}
+							className="flex items-center gap-1 bg-blue-600 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-700"
+						  >
+							<Icon.Download className="w-4 h-4" /> Сохранить
+						  </button>
+						</div>
+					  </div>
+                  {/* Превью */}
+                  <div
+                    className="relative mb-4 bg-gray-100 rounded-lg overflow-hidden"
+                    style={{ aspectRatio: formats[format].ratio }}
+                  >
+					<canvas
+					  ref={el => (canvasRefs.current[index] = el)}
+					  className="absolute inset-0 w-full h-full"
+					  onTouchStart={(e)=>{
+						if (uiMode!=='Focus') return;
+						const t = e.touches[0]; touchRef.current={startX:t.clientX,startY:t.clientY,active:true};
+					  }}
+					  onTouchMove={(e)=>{
+						if (!touchRef.current.active || uiMode!=='Focus') return;
+						// можно добавить превью-drag позже
+					  }}
+					  onTouchEnd={(e)=>{
+						if (!touchRef.current.active || uiMode!=='Focus') return;
+						const dx = (e.changedTouches[0].clientX - touchRef.current.startX);
+						const dy = (e.changedTouches[0].clientY - touchRef.current.startY);
+						touchRef.current.active = false;
+						if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) {
+						  if (dx < 0) nextSlide(); else prevSlide();
+						}
+					  }}
+					/>
+                    {!slide.image && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/35">
+                        <label className="flex flex-col items-center gap-2 text-white cursor-pointer hover:bg-black/20 p-4 rounded">
+                          <Icon.Image className="w-8 h-8" />
+                          <span>Загрузить фото</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden-input"
+                            onChange={(e) => handleImageUpload(slide.id, e)}
+                          />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                  {/* Кнопки под превью */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <label className="inline-flex items-center gap-2 text-sm bg-gray-100 hover:bg-gray-200 px-2.5 py-1.5 rounded cursor-pointer">
+                      <Icon.Upload className="w-4 h-4" />
+                      <span>Сменить фото</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden-input"
+                        onChange={(e) => handleImageUpload(slide.id, e)}
+                      />
+                    </label>
+                    {slide.image && (
+                      <button
+                        onClick={() =>
+                          updateSlide(slide.id, {
+                            image: null,
+                            imageUrl: null,
+                            imageTx: { scale: 1, x: 0, y: 0 },
+                          })
+                        }
+                        className="text-sm px-2.5 py-1.5 bg-red-50 text-red-600 rounded hover:bg-red-100"
+                      >
+                        Удалить
+                      </button>
+                    )}
+                  </div>
+                  {/* Настройки — всегда в DOM, скрываем классом */}
+                  <div
+                    id={`slide-settings-${slide.id}`}
+                    className={`space-y-3 ${collapsed[slide.id] ? 'hidden' : ''}`}
+                  >
+                    {/* Текст */}
+                    <div className="bg-slate-50 border rounded-lg p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-xs font-bold text-gray-500">Текст</div>
+                        <button
+                          onClick={() => toggleSection(slide.id, 'text')}
+                          className="text-xs px-2 py-1 rounded bg-indigo-500 hover:bg-indigo-600 text-white" 
+                        >
+                          {sc.text ? 'Развернуть' : 'Свернуть'}
+                        </button>
+                      </div>
+                      {!sc.text && (
+                        <>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-xs text-slate-600">Позиция</label>
+                              <select
+                                value={slide.textPosition}
+                                onChange={(e) => updateSlide(slide.id, { textPosition: e.target.value })}
+                                className="w-full px-3 py-2 border rounded text-sm"
+                              >
+                                <option value="top-left">Верх-лево</option>
+                                <option value="top-right">Верх-право</option>
+                                <option value="center">Центр</option>
+                                <option value="bottom-left">Низ-лево</option>
+                                <option value="bottom-right">Низ-право</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-600">Шрифт</label>
+                              <select
+                                value={slide.fontFamily ?? global.fontFamily}
+                                onChange={(e) => updateSlide(slide.id, { fontFamily: e.target.value })}
+                                className="w-full px-3 py-2 border rounded text-sm"
+                              >
+                                <option value="'Montserrat', Arial, sans-serif">Montserrat</option>
+                                <option value="'Inter', Arial, sans-serif">Inter</option>
+                                <option value="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', sans-serif">System UI</option>
+                                <option value="Arial, 'Helvetica Neue', Helvetica, sans-serif">Arial / Helvetica</option>
+                                <option value="'Trebuchet MS', Helvetica, sans-serif">Trebuchet MS</option>
+                                <option value="Verdana, Geneva, sans-serif">Verdana</option>
+                                <option value="Tahoma, Geneva, sans-serif">Tahoma</option>
+                                <option value="'Lucida Sans Unicode', 'Lucida Grande', sans-serif">Lucida Sans</option>
+                                <option value="Georgia, 'Times New Roman', Times, serif">Georgia / Times</option>
+                                <option value="'Times New Roman', Times, serif">Times New Roman</option>
+                                <option value="'Courier New', Courier, monospace">Courier New</option>
+                                <option value="Impact, Charcoal, sans-serif">Impact</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3 mt-3">
+                            <div>
+                              <label className="text-xs text-slate-600">Размер текста</label>
+                              <input
+                                type="range"
+                                min="24"
+                                max="120"
+                                value={slide.fontSize}
+                                onChange={(e) => updateSlide(slide.id, { fontSize: parseInt(e.target.value, 10) })}
+                                className="w-full"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-600">Точно (px)</label>
+                              <input
+                                type="number"
+                                min="8"
+                                max="200"
+                                step="1"
+                                value={slide.fontSize}
+                                onChange={(e) => updateSlide(slide.id, { fontSize: parseInt(e.target.value || '0', 10) || 0 })}
+                                className="w-full px-2 py-1 border rounded text-sm mono"
+                              />
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3 mt-3">
+                            <div>
+                              <label className="text-xs text-slate-600">Межстрочный</label>
+                              <input
+                                type="range"
+                                min="1.0"
+                                max="1.8"
+                                step="0.05"
+                                value={slide.lineHeight ?? global.lineHeight}
+                                onChange={(e) => updateSlide(slide.id, { lineHeight: parseFloat(e.target.value) })}
+                                className="w-full"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-600">Цвет текста</label>
+                              <input
+                                type="color"
+                                value={slide.textColor}
+                                onChange={(e) => updateSlide(slide.id, { textColor: e.target.value })}
+                                className="w-full h-9 rounded border"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 mt-3">
+                            <div>
+                              <label className="text-xs text-slate-600">🎨</label>
+                              <HexInput
+                                value={slide.textColor}
+                                onChange={(v)=>updateSlide(slide.id, { textColor: v })}
+                                onValidChange={(v)=>updateSlide(slide.id, { textColor: v })}
+                                placeholder="#FFFFFF"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-600">Тень текста</label>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value={global.shadow}
+                                onChange={(e) => applyAll({ shadow: parseFloat(e.target.value) })}
+                                className="w-full"
+                              />
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {/* Подложка */}
+                    <div className="bg-slate-50 border rounded-lg p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-xs font-bold text-gray-500">Подложка</div>
+                        <button
+                          onClick={() => toggleSection(slide.id, 'bg')}
+                          className="text-xs px-2 py-1 rounded bg-indigo-500 hover:bg-indigo-600 text-white"
+                        >
+                          {sc.bg ? 'Развернуть' : 'Свернуть'}
+                        </button>
+                      </div>
+                      {!sc.bg && (
+                        <>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-xs text-slate-600">Режим</label>
+                              <select
+                                value={slide.bgMode}
+                                onChange={(e) => updateSlide(slide.id, { bgMode: e.target.value })}
+                                className="w-full px-3 py-2 border rounded text-sm"
+                              >
+                                <option value="chip">Highlight под буквами</option>
+                                <option value="highlight">Highlight цельный блок</option>
+                                <option value="full-gradient">Градиент по ширине</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-600">Цвет</label>
+                              <input
+                                type="color"
+                                value={slide.backgroundColor}
+                                onChange={(e) => updateSlide(slide.id, { backgroundColor: e.target.value })}
+                                className="w-full h-9 rounded border"
+                              />
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3 mt-3">
+                            <div>
+                              <label className="text-xs text-slate-600">🎨</label>
+                              <HexInput
+                                value={slide.backgroundColor}
+                                onChange={(v)=>updateSlide(slide.id, { backgroundColor: v })}
+                                onValidChange={(v)=>updateSlide(slide.id, { backgroundColor: v })}
+                                placeholder="#000000"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-600">Непрозрачность</label>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value={slide.backgroundOpacity}
+                                onChange={(e) => updateSlide(slide.id, { backgroundOpacity: parseFloat(e.target.value) })}
+                                className="w-full"
+                              />
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+                            <div>
+                              <label className="text-xs text-slate-600">Скругление</label>
+                              <input
+                                type="range"
+                                min="8"
+                                max="40"
+                                value={slide.chipRadius}
+                                onChange={(e) => updateSlide(slide.id, { chipRadius: parseInt(e.target.value, 10) })}
+                                className="w-full"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-600">Отступ X</label>
+                              <input
+                                type="range"
+                                min="8"
+                                max="40"
+                                value={slide.chipPadX}
+                                onChange={(e) => updateSlide(slide.id, { chipPadX: parseInt(e.target.value, 10) })}
+                                className="w-full"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-600">Отступ Y</label>
+                              <input
+                                type="range"
+                                min="6"
+                                max="30"
+                                value={slide.chipPadY}
+                                onChange={(e) => updateSlide(slide.id, { chipPadY: parseInt(e.target.value, 10) })}
+                                className="w-full"
+                              />
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {/* Фото */}
+                    <div className="bg-slate-50 border rounded-lg p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-xs font-bold text-gray-500">Фото</div>
+                        <button
+                          onClick={() => toggleSection(slide.id, 'image')}
+                          className="text-xs px-2 py-1 rounded bg-indigo-500 hover:bg-indigo-600 text-white"
+                        >
+                          {sc.image ? 'Развернуть' : 'Свернуть'}
+                        </button>
+                      </div>
+                      {!sc.image && (
+                        <>
+                          <div className="text-xs text-gray-500 -mt-1 mb-2">
+                            {slide.image ? 'Перетаскивай по превью, щипок — зум.' : 'Загрузите фото, чтобы активировать управление.'}
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div>
+                              <label className="text-xs text-slate-600">Масштаб</label>
+                              <input
+                                type="range"
+                                min="0.2"
+                                max="5"
+                                step="0.01"
+                                value={slide.imageTx?.scale ?? 1}
+                                onChange={(e) =>
+                                  updateSlide(slide.id, { imageTx: { ...slide.imageTx, scale: parseFloat(e.target.value) } })
+                                }
+                                className="w-full"
+                                disabled={!slide.image}
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-600">Смещение X</label>
+                              <input
+                                type="range"
+                                min="-1000"
+                                max="1000"
+                                step="1"
+                                value={slide.imageTx?.x ?? 0}
+                                onChange={(e) =>
+                                  updateSlide(slide.id, { imageTx: { ...slide.imageTx, x: parseInt(e.target.value, 10) } })
+                                }
+                                className="w-full"
+                                disabled={!slide.image}
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-600">Непрозрачность фото</label>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value={slide.imageOpacity ?? 1}
+                                onChange={(e) =>
+                                  updateSlide(slide.id, { imageOpacity: parseFloat(e.target.value) })
+                                }
+                                className="w-full"
+                                disabled={!slide.image}
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-600">Смещение Y</label>
+                              <input
+                                type="range"
+                                min="-1000"
+                                max="1000"
+                                step="1"
+                                value={slide.imageTx?.y ?? 0}
+                                onChange={(e) =>
+                                  updateSlide(slide.id, { imageTx: { ...slide.imageTx, y: parseInt(e.target.value, 10) } })
+                                }
+                                className="w-full"
+                                disabled={!slide.image}
+                              />
+                            </div>
+                          </div>
+                          <div className="mt-2">
+                            <button
+                              onClick={() => updateSlide(slide.id, { imageTx: { scale: 1, x: 0, y: 0 } })}
+                              className="text-xs px-2 py-1 bg-gray-500 hover:bg-gray-700 rounded text-white"
+                              disabled={!slide.image}
+                            >
+                              Сбросить позицию
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {/* Текст слайда */}
+                    <div>
+                      <div className="text-xs font-medium text-gray-500 mb-1">Текст слайда</div>
+                      <textarea
+                        value={slide.text}
+                        onChange={(e) => updateSlide(slide.id, { text: e.target.value })}
+                        rows={3}
+                        className="w-full px-3 py-2 border rounded text-sm"
+                      />
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Форматирование: <span className="font-semibold">**жирный**</span>, <em>*курсив*</em>.
+                    </div>
+                  </div>    
+                </div>    
+              </div>
+            ); 
+          })}  
+        </div> 
+      </div>       
+    )}              
+  </div>     
+);
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
