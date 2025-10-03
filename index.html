@@ -790,14 +790,13 @@
 		<div className="fixed top-2 left-2 z-50">
 		  <button
 			onClick={() => setUiMode(m => (m === 'Focus' ? 'Pro' : 'Focus'))}
-			className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs shadow"
+			className="px-3 py-1.5 rounded-lg bg-slate-200 text-white text-xs shadow"
 			aria-label="Toggle Focus/Pro"
 		  >
 			{uiMode === 'Focus' 
 			  ? '➡🖥'   // Pro → Desktop 🖥️
 			  : '➡📱'    // Focus → Mobile 📱
 			}
-
 		  </button>
 		</div>
 		{/* === OVERLAY HEADER === */}
@@ -897,12 +896,27 @@
 						  placeholder="Текст слайда…"
 						/>
 						<div className="flex items-center gap-2">
-						  <button onClick={()=>wrapSelection('bold')}  className="px-3 py-1.5 bg-slate-100 rounded">B</button>
-						  <button onClick={()=>wrapSelection('italic')} className="px-3 py-1.5 bg-slate-100 rounded">i</button>
-						  <button onClick={()=>{
-							const t = `${separator||'//'}`;
-							updateSlide(slides[current].id,{ text: (slides[current].text||'') + t });
-						  }} className="px-3 py-1.5 bg-slate-100 rounded">↲ разделить</button>
+						  <button 
+							onClick={()=>wrapSelection('bold')}  
+							className="px-3 py-1.5 bg-slate-100 rounded font-bold"
+						  >
+							B
+						  </button>
+						  <button 
+							onClick={()=>wrapSelection('italic')} 
+							className="px-3 py-1.5 bg-slate-100 rounded italic"
+						  >
+							I
+						  </button>
+						  <button 
+							onClick={()=>{
+							  const t = `${separator||'//'}`;
+							  updateSlide(slides[current].id,{ text: (slides[current].text||'') + t });
+							}} 
+							className="px-3 py-1.5 bg-slate-100 rounded"
+						  >
+							↲ разделить
+						  </button>
 						</div>
 					  </div>
 					)}
